@@ -1,0 +1,33 @@
+routingMode: native
+ipv4NativeRoutingCIDR: 10.244.0.0/16
+ipv6NativeRoutingCIDR: "fd00:10:244::/64"
+ipv6:
+  enabled: true
+autoDirectNodeRoutes: true
+endpointRoutes:
+  enabled: true
+
+enableHostLegacyRouting: true
+
+kubeProxyReplacement: true
+bpf:
+  clockProbe: true
+  lbMapMax: 262144
+  lbSockHostnsOnly: true
+  masquerade: true
+
+cgroup:
+  autoMount:
+    enabled: false
+  hostRoot: /sys/fs/cgroup
+
+localRedirectPolicy: true
+sctp:
+  enabled: true
+
+healthChecking: false
+endpointHealthChecking:
+  enabled: false
+
+operator:
+  replicas: 1
