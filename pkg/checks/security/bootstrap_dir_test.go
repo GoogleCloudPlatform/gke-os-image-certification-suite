@@ -19,8 +19,19 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation"
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation/testutil"
 )
+
+func TestBootstrapDirectoryCheck_TierAndDestructive(t *testing.T) {
+	check := &bootstrapDirectoryCheck{}
+	if check.Tier() != validation.Tier0 {
+		t.Errorf("expected Tier0, got %v", check.Tier())
+	}
+	if check.Destructive() {
+		t.Errorf("expected Destructive to be false, got true")
+	}
+}
 
 func TestBootstrapDirectoryCheck_Success(t *testing.T) {
 	check := &bootstrapDirectoryCheck{}
@@ -29,45 +40,21 @@ func TestBootstrapDirectoryCheck_Success(t *testing.T) {
 	if err := check.Run(context.Background(), runner); err != nil {
 		t.Fatalf("expected success, got err: %v", err)
 	}
-	if len(runner.RunCmds) != 2 {
-		t.Fatalf("expected 2 commands run, got %d", len(runner.RunCmds))
+	if len(runner.RunCmds) != 1 {
+		t.Fatalf("expected 1 command run, got %d", len(runner.RunCmds))
 	}
 }
 
-func TestBootstrapDirectoryCheck_MkdirFailure(t *testing.T) {
+func TestBootstrapDirectoryCheck_Failure(t *testing.T) {
 	check := &bootstrapDirectoryCheck{}
+	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qw "ro"`
 	runner := &testutil.MockSSHRunner{
 		RunErrMap: map[string]error{
-			"sudo mkdir -p /home/kubernetes/bin": errors.New("read-only file system"),
+			cmd: errors.New("read-only file system"),
 		},
 	}
 
 	if err := check.Run(context.Background(), runner); err == nil {
-		t.Fatalf("expected error when mkdir fails, got nil")
-	}
-}
-
-func TestBootstrapDirectoryCheck_WriteFailure(t *testing.T) {
-	check := &bootstrapDirectoryCheck{}
-	runner := &testutil.MockSSHRunner{
-		RunErrMap: map[string]error{
-			"sudo touch /home/kubernetes/bin/.gke_security_write_test && sudo rm -f /home/kubernetes/bin/.gke_security_write_test": errors.New("permission denied"),
-		},
-	}
-
-	if err := check.Run(context.Background(), runner); err == nil {
-		t.Fatalf("expected error when writing to directory fails, got nil")
-	}
-}
-
-func TestBootstrapDirectoryCheck_Cleanup(t *testing.T) {
-	check := &bootstrapDirectoryCheck{}
-	runner := &testutil.MockSSHRunner{}
-
-	if err := check.Cleanup(context.Background(), runner); err != nil {
-		t.Fatalf("expected cleanup success, got err: %v", err)
-	}
-	if len(runner.RunCmds) != 1 || runner.RunCmds[0] != "sudo rm -f /home/kubernetes/bin/.gke_security_write_test" {
-		t.Fatalf("unexpected cleanup command: %v", runner.RunCmds)
+		t.Fatalf("expected error when command fails, got nil")
 	}
 }

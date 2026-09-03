@@ -25,29 +25,17 @@ type bootstrapDirectoryCheck struct{}
 
 func (c *bootstrapDirectoryCheck) Name() string { return "security/bootstrap-directory-writable" }
 func (c *bootstrapDirectoryCheck) Description() string {
-	return "Verifies that the GKE bootstrap directory (/home/kubernetes/bin) can be created and is writable by the bootstrap script"
+	return "Verifies non-destructively that the GKE bootstrap directory (/home/kubernetes/bin) or its nearest parent directory exists, is writable, and resides on a read-write mount"
 }
-func (c *bootstrapDirectoryCheck) Tier() validation.Tier { return validation.Tier1 }
-func (c *bootstrapDirectoryCheck) Destructive() bool     { return true }
+func (c *bootstrapDirectoryCheck) Tier() validation.Tier { return validation.Tier0 }
+func (c *bootstrapDirectoryCheck) Destructive() bool     { return false }
 
 func (c *bootstrapDirectoryCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	// 1. Ensure directory exists or can be created (using sudo)
-	if err := runner.Run(ctx, "sudo mkdir -p /home/kubernetes/bin"); err != nil {
-		return fmt.Errorf("failed to create /home/kubernetes/bin directory: %w", err)
+	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qw "ro"`
+	if err := runner.Run(ctx, cmd); err != nil {
+		return fmt.Errorf("failed to verify that /home/kubernetes/bin or its nearest parent directory is writable on a read-write mount: %w", err)
 	}
-
-	// 2. Attempt to write a test file to check write permissions and clean up
-	testFile := "/home/kubernetes/bin/.gke_security_write_test"
-	if err := runner.Run(ctx, fmt.Sprintf("sudo touch %s && sudo rm -f %s", testFile, testFile)); err != nil {
-		return fmt.Errorf("directory /home/kubernetes/bin is not writable: %w", err)
-	}
-
 	return nil
-}
-
-func (c *bootstrapDirectoryCheck) Cleanup(ctx context.Context, runner validation.SSHRunner) error {
-	testFile := "/home/kubernetes/bin/.gke_security_write_test"
-	return runner.Run(ctx, fmt.Sprintf("sudo rm -f %s", testFile))
 }
 
 func init() {
