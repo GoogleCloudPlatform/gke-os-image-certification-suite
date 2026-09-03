@@ -23,17 +23,18 @@ import (
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation/testutil"
 )
 
-func TestAgentLsmAccessCheck_Success(t *testing.T) {
-	check := &agentLsmAccessCheck{}
+func TestRegisteredLsmPathAccess_Success(t *testing.T) {
 	runner := &testutil.MockSSHRunner{} // all commands succeed
 
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected success when host paths are accessible, got: %v", err)
+	for _, check := range RegisteredLsmPathAccess {
+		if err := check.Run(context.Background(), runner); err != nil {
+			t.Errorf("expected success for check %s, got: %v", check.Name(), err)
+		}
 	}
 }
 
-func TestAgentLsmAccessCheck_PathFailure(t *testing.T) {
-	check := &agentLsmAccessCheck{}
+func TestLsmPathAccessCheck_Failure(t *testing.T) {
+	check := RegisteredLsmPathAccess[0] // /home/kubernetes/bin
 	runner := &testutil.MockSSHRunner{
 		RunErrMap: map[string]error{
 			"if [ -d /home/kubernetes/bin ]; then test -w /home/kubernetes/bin; else sudo test -d /home && sudo test -w /home; fi": errors.New("permission denied"),

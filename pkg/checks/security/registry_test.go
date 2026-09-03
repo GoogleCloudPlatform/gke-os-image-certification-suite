@@ -29,7 +29,7 @@ func TestSecurityChecksRegistered(t *testing.T) {
 			securityChecks++
 		}
 	}
-	expected := 4 // tpm-device-availability, bootstrap-directory-writable, nix-ld-compatibility, lsm-policy-access
+	expected := 6 // tpm-device-availability, bootstrap-directory-writable, dynamic-linker-compatibility, and 3 lsm-access checks
 	if securityChecks != expected {
 		t.Errorf("Expected %d registered security checks, got %d", expected, securityChecks)
 	}

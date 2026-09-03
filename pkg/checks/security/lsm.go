@@ -23,60 +23,36 @@ import (
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation"
 )
 
-type pathTarget struct {
+// lsmPathAccessCheck validates that Linux Security Modules permit GKE node-agents
+// access to a specific required host path.
+type lsmPathAccessCheck struct {
 	path       string
-	testCmd    string
 	permString string
+	testCmd    string
 }
 
-type agentLsmAccessCheck struct{}
-
-func (c *agentLsmAccessCheck) Name() string { return "security/lsm-policy-access" }
-func (c *agentLsmAccessCheck) Description() string {
-	return "Verifies that Linux Security Modules (AppArmor or SELinux) do not block GKE node-agents from accessing critical host paths"
-}
-func (c *agentLsmAccessCheck) Tier() validation.Tier { return validation.Tier1 }
-func (c *agentLsmAccessCheck) Destructive() bool     { return false }
-
-func (c *agentLsmAccessCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	targets := []pathTarget{
-		{
-			path:       "/home/kubernetes/bin",
-			testCmd:    "if [ -d /home/kubernetes/bin ]; then test -w /home/kubernetes/bin; else sudo test -d /home && sudo test -w /home; fi",
-			permString: "READ/WRITE",
-		},
-		{
-			path:       "/var/lib/kubelet",
-			testCmd:    "if [ -d /var/lib/kubelet ]; then test -r /var/lib/kubelet; else test -d /var/lib && test -r /var/lib; fi",
-			permString: "READ",
-		},
-		{
-			path:       "/var/run",
-			testCmd:    "test -e /var/run && test -r /var/run",
-			permString: "READ",
-		},
-	}
-
-	var failedPaths []string
-	for _, target := range targets {
-		if err := runner.Run(ctx, target.testCmd); err != nil {
-			failedPaths = append(failedPaths, fmt.Sprintf("%s (%s)", target.path, target.permString))
-		}
-	}
-
-	if len(failedPaths) == 0 {
-		return nil
-	}
-
-	// Access failed on required paths; collect LSM enforcement status and audit log denials
-	lsmStatus := c.collectLsmStatus(ctx, runner)
-	auditLogs := c.collectAuditDenials(ctx, runner)
-
-	return fmt.Errorf("required GKE node agent host path access failed for %v\nLSM Status:\n%s\nAudit/Kernel Denials:\n%s",
-		failedPaths, lsmStatus, auditLogs)
+func (c *lsmPathAccessCheck) Name() string {
+	return "security/lsm-access-" + c.path
 }
 
-func (c *agentLsmAccessCheck) collectLsmStatus(ctx context.Context, runner validation.SSHRunner) string {
+func (c *lsmPathAccessCheck) Description() string {
+	return fmt.Sprintf("Verifies that Linux Security Modules (AppArmor or SELinux) permit GKE node-agents %s access to %s", c.permString, c.path)
+}
+
+func (c *lsmPathAccessCheck) Tier() validation.Tier { return validation.Tier1 }
+func (c *lsmPathAccessCheck) Destructive() bool     { return false }
+
+func (c *lsmPathAccessCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
+	if err := runner.Run(ctx, c.testCmd); err != nil {
+		lsmStatus := collectLsmStatus(ctx, runner)
+		auditLogs := collectAuditDenials(ctx, runner)
+		return fmt.Errorf("required GKE node agent host path access failed for %s (%s): %w\nLSM Status:\n%s\nAudit/Kernel Denials:\n%s",
+			c.path, c.permString, err, lsmStatus, auditLogs)
+	}
+	return nil
+}
+
+func collectLsmStatus(ctx context.Context, runner validation.SSHRunner) string {
 	var sb strings.Builder
 
 	seOut, err := runner.CombinedOutput(ctx, "sestatus 2>/dev/null || true")
@@ -96,7 +72,7 @@ func (c *agentLsmAccessCheck) collectLsmStatus(ctx context.Context, runner valid
 	return sb.String()
 }
 
-func (c *agentLsmAccessCheck) collectAuditDenials(ctx context.Context, runner validation.SSHRunner) string {
+func collectAuditDenials(ctx context.Context, runner validation.SSHRunner) string {
 	cmd := "dmesg 2>/dev/null | grep -iE 'apparmor|selinux|avc|denied' | tail -n 10 || grep -iE 'apparmor|selinux|avc|denied' /var/log/audit/audit.log 2>/dev/null | tail -n 10 || echo 'No LSM audit denial entries found in kernel logs.'"
 	out, err := runner.CombinedOutput(ctx, cmd)
 	if err != nil || len(bytes.TrimSpace(out)) == 0 {
@@ -105,6 +81,27 @@ func (c *agentLsmAccessCheck) collectAuditDenials(ctx context.Context, runner va
 	return fmt.Sprintf("  %s", strings.TrimSpace(string(out)))
 }
 
+// RegisteredLsmPathAccess lists required host directory and symlink permission requirements for LSM evaluation.
+var RegisteredLsmPathAccess = []*lsmPathAccessCheck{
+	{
+		path:       "/home/kubernetes/bin",
+		permString: "READ/WRITE",
+		testCmd:    "if [ -d /home/kubernetes/bin ]; then test -w /home/kubernetes/bin; else sudo test -d /home && sudo test -w /home; fi",
+	},
+	{
+		path:       "/var/lib/kubelet",
+		permString: "READ",
+		testCmd:    "if [ -d /var/lib/kubelet ]; then test -r /var/lib/kubelet; else test -d /var/lib && test -r /var/lib; fi",
+	},
+	{
+		path:       "/var/run",
+		permString: "READ",
+		testCmd:    "test -e /var/run && test -r /var/run",
+	},
+}
+
 func init() {
-	validation.Register(&agentLsmAccessCheck{})
+	for _, check := range RegisteredLsmPathAccess {
+		validation.Register(check)
+	}
 }
