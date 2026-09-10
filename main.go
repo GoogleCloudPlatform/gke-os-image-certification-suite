@@ -39,6 +39,7 @@ import (
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/networking"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/node"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/observability"
+	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/security"
 )
 
 var (
