@@ -2,7 +2,7 @@
 
 The GKE Image Certification Suite is a Go-based automated validation framework designed to certify the custom Operating System (OS) images, e.g., Container-Optimized OS (COS) and Ubuntu, meet the core node-level bootstrap contracts required to run on Google Kubernetes Engine (GKE).
 
-This suite is used by GKE partners and customers under the Image Customization model to self-certify their golden images before registering them with the GKE qualification pipelines. It orchestrates machine provisioning, bootstrapping, secure SSH connectivity via IAP, and sequential execution of validation checks.
+This suite is used by GKE partners and customers under the Image Customization model to self-certify their golden images before registering them with the GKE qualification pipelines. It orchestrates machine provisioning, bootstrapping, secure SSH connectivity via IAP, and concurrent and sequential execution of validation checks.
 
 ---
 
@@ -41,8 +41,8 @@ In this mode, the runner automatically handles the entire machine lifecycle:
 1. Generates an ephemeral SSH key pair in memory.
 2. Provisions a GCE VM (with an ephemeral public IP for outbound internet access during bootstrapping).
 3. Establishes a secure IAP (Identity-Aware Proxy) tunnel.
-4. Runs Tier 0 Gatekeeper checks on the clean, unmodified operating system.
-5. Runs non-destructive Tier 1 validation checks.
+4. Runs Tier 0 Gatekeeper checks concurrently (default 5 parallel SSH sessions via `-concurrency`, capped at `< 10` to respect `sshd` `MaxSessions` limits) on the clean, unmodified operating system.
+5. Runs non-destructive Tier 1 validation checks concurrently.
 6. Resolves required test tools (**Docker**, **Kind**, **Kubectl**) and bootstraps them JIT only when dependent/destructive checks require them.
    * *COS & Directory Permissions:* For Container-Optimized OS (COS) which has a read-only root directory, binary-only tools (Kind, Kubectl) are installed in `$HOME/.local/bin`. The pre-installed Docker daemon is reused.
 7. Reconnects if necessary to apply group membership changes (`docker` group).
@@ -126,6 +126,7 @@ go run main.go \
 | `-vm-ip` | string | IP/Addr of target VM (required if `-provision-vm` is `false`, supports `host:port`). |
 | `-ssh-key` | string | Path to private SSH key (required if `-provision-vm` is `false`. Note: must be passphrase-less). |
 | `-ssh-user` | string | SSH username (default: `certuser`). |
+| `-concurrency` | int | Maximum number of non-destructive checks to run concurrently (default: `5`, must be between `1` and `9`). |
 
 ---
 
@@ -169,7 +170,7 @@ func (c *MyServiceCheck) Description() string {
 
 func (c *MyServiceCheck) Tier() validation.Tier {
 	// Tier0: Gatekeeper (halts suite on failure)
-	// Tier1: Regular check (failures accumulate, run sequentially)
+	// Tier1: Regular check (failures accumulate; non-destructive run concurrently, destructive run sequentially)
 	return validation.Tier1
 }
 
@@ -216,13 +217,13 @@ import (
 
 Regardless of the tier, all checks must be executable independently under the assumption of a clean-state environment. Within a specific tier, there is no designated execution order; instead, ordering is implicitly handled by the tiered check system itself. The specific details for each tier are outlined below:
 
-* **Tier 0 (Gatekeepers):** Run first, sequentially.
-  * If any Tier 0 check fails, the test suite halts immediately. Use this for critical dependencies (e.g., checking if `containerd` exists).
+* **Tier 0 (Gatekeepers):** Run first, concurrently (bounded by `-concurrency`, defaulting to 5 and capped at `< 10`).
+  * Evaluates all Tier 0 Gatekeepers and aggregates all failures before halting without running Tier 1. This ensures all baseline OS compatibility issues are discovered in a single run. Use this for critical dependencies (e.g., checking if `containerd` exists).
   * Tier 0 checks are baseline compatibility tests, or "Gatekeepers," that verify the target operating system meets the absolute minimum architectural requirements to run GKE.
   * They are simple, non-destructive checks that validate critical host prerequisites like unified cgroup v2 hierarchy support and the existence of the containerd runtime.
   * Because they must run on a clean, unmodified system, they are defined by a strict architectural constraint that forbids them from declaring or installing any external software dependencies.
 * **Tier 1 (Validation Checks):** Run after all Tier 0 checks pass.
-  * **All Tier 1 checks (both non-destructive and destructive) currently execute sequentially.** *(Note: Concurrent execution for non-destructive checks with worker-pool limits is in active development).*
+  * **Non-destructive checks execute concurrently** (bounded by `-concurrency`, defaulting to 5 and capped at `< 10`), while **destructive checks execute sequentially**.
   * **Destructive checks:** Modify some system state and/or have potential for conflicts with other checks. These checks must revert the system logic to its original state prior to completing. *(Note: Formal enforcement via the `CleanableCheck` interface is currently in code review under CL 2187941).*
   * Unlike Tier 0 checks, Tier 1 checks are permitted to declare external tool dependencies (like Docker, Kind, or Kubectl) which the runner will automatically install JIT before executing the check.
 
