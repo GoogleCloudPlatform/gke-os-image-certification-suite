@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -25,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/provision"
@@ -399,14 +401,45 @@ func resolveAndInstallDependencies(ctx context.Context, runner validation.SSHRun
 	return runner, nil
 }
 
-// runTier0 executes the Tier 0 gatekeeper checks sequentially.
+// OpenSSH's default MaxSessions per single TCP connection in sshd_config is 10.
+// We cap concurrent Tier 0 checks at 5 (50% of MaxSessions) so that even if 5
+// sessions are closing asynchronously over the IAP tunnel while 5 new sessions
+// are opening (5 + 5 = 10), we never exceed sshd's MaxSessions limit.
+const maxTier0Concurrency = 5
+
+// runTier0 executes the Tier 0 gatekeeper checks concurrently up to maxTier0Concurrency at a time,
+// accumulating all failures across the tier and halting before Tier 1 if any check fails.
 func runTier0(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
-	fmt.Printf("Running Tier 0 Gatekeeper checks (%d)...\n", len(checks))
+	fmt.Printf("Running Tier 0 Gatekeeper checks (%d) with concurrency %d...\n", len(checks), maxTier0Concurrency)
+
+	sem := make(chan struct{}, maxTier0Concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
 	for _, c := range checks {
-		fmt.Printf("  Running Gatekeeper %s...\n", c.Name())
-		if err := c.Run(ctx, runner); err != nil {
-			return fmt.Errorf("FATAL: Gatekeeper %s failed: %w. Halting execution", c.Name(), err)
-		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(check validation.Check) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			mu.Lock()
+			fmt.Printf("  Running Gatekeeper %s...\n", check.Name())
+			mu.Unlock()
+
+			if err := check.Run(ctx, runner); err != nil {
+				mu.Lock()
+				fmt.Printf("  ERROR: Gatekeeper %s failed: %v\n", check.Name(), err)
+				errs = append(errs, fmt.Errorf("Gatekeeper %s failed: %w", check.Name(), err))
+				mu.Unlock()
+			}
+		}(c)
+	}
+
+	wg.Wait()
+	if len(errs) > 0 {
+		return fmt.Errorf("FATAL: %d Gatekeeper check(s) failed: %w. Halting execution", len(errs), errors.Join(errs...))
 	}
 	fmt.Println("All Tier 0 Gatekeeper checks passed.")
 	return nil
