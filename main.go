@@ -40,6 +40,9 @@ import (
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/node"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/observability"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/security"
+
+	// Explicit imports for registerDynamicChecks()
+	storage_check "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/storage"
 )
 
 var (
@@ -47,13 +50,30 @@ var (
 	sshKeyPath = flag.String("ssh-key", "", "Path to the private SSH key file (ignored if -provision-vm is true)")
 	sshUser    = flag.String("ssh-user", "certuser", "SSH username for the VM (ignored if -provision-vm is true)")
 
-	provisionVM    = flag.Bool("provision-vm", false, "Auto-provision a GCE VM for the test run")
-	gcpProject     = flag.String("gcp-project", "", "GCP Project ID (required if -provision-vm is true)")
-	gcpZone        = flag.String("gcp-zone", "", "GCP Zone (required if -provision-vm is true)")
-	machineType    = flag.String("machine-type", "e2-medium", "GCE Machine Type")
-	sourceImage    = flag.String("source-image", "", "Source image path or family (required if -provision-vm is true)")
-	gkeVersionFlag = flag.String("gke-version", "1.35.0", "Target GKE Kubernetes version (e.g. 1.35.0 or 1.36.0)")
+	provisionVM       = flag.Bool("provision-vm", false, "Auto-provision a GCE VM for the test run")
+	gcpProject        = flag.String("gcp-project", "", "GCP Project ID (required if -provision-vm is true)")
+	gcpServiceAccount = flag.String("gcp-service-account", "", "GCP Service Account (required for PD CSI qualification)")
+	gcpZone           = flag.String("gcp-zone", "", "GCP Zone (required if -provision-vm is true)")
+	machineType       = flag.String("machine-type", "e2-medium", "GCE Machine Type")
+	minCpuPlatform = flag.String("min-cpu-platform", "", "Minimum CPU architecture")
+	sourceImage       = flag.String("source-image", "", "Source image path or family (required if -provision-vm is true)")
+	gkeVersionFlag    = flag.String("gke-version", "1.35.0", "Target GKE Kubernetes version (e.g. 1.35.0 or 1.36.0)")
+	subnetwork        = flag.String("subnetwork", "", "Subnetwork to use for the instance, can be left empty if not required by your project")
+	skipTeardown      = flag.Bool("skip-teardown", false, "Do not tear down the target VM if created (useful for debugging)")
+	skipTargetVM      = flag.Bool("skip-target-vm", false, "Do not create a target VM. Check that require one will be skipped")
 )
+
+func registerDynamicChecks() {
+	validation.Register(&storage_check.PDCSICheck{
+		Project:        *gcpProject,
+		ServiceAccount: *gcpServiceAccount,
+		Zone:           *gcpZone,
+		SourceImage:    *sourceImage,
+		MachineType:    *machineType,
+		MinCpuPlatform: *minCpuPlatform,
+		Subnetwork:     *subnetwork,
+	})
+}
 
 func main() {
 	flag.Parse()
@@ -65,7 +85,6 @@ func main() {
 
 func run() error {
 	var gkeVer utils.SemVer
-	var hasVersion bool
 	var err error
 
 	versionStr := *gkeVersionFlag
@@ -77,73 +96,20 @@ func run() error {
 	if gkeVer.Major < 1 || (gkeVer.Major == 1 && gkeVer.Minor < 34) {
 		return fmt.Errorf("unsupported GKE version %s: minimum supported GKE version is 1.34", versionStr)
 	}
-	hasVersion = true
-
 	ctx := context.Background()
-	var targetIP string
-	var targetUser string
-	var keyBytes []byte
-	var cleanup func()
+	var targetEnv validation.TargetEnvironment
 
-	// 1. Resolve Target Connection Info (either provision a new VM or use existing)
-	if *provisionVM {
-		targetIP, keyBytes, cleanup, err = provisionAndTunnel(ctx)
+	if !*skipTargetVM {
+		var cleanup func()
+		targetEnv, cleanup, err = setupTarget(ctx, gkeVer)
 		if err != nil {
 			return err
 		}
 		defer cleanup()
-		targetUser = "certuser"
-	} else {
-		targetIP, targetUser, keyBytes, err = getTargetConnectionInfo()
-		if err != nil {
-			return err
-		}
 	}
 
-	// 2. Connect to the Target VM
-	sshClient, err := connectToVM(targetIP, targetUser, keyBytes)
-	if err != nil {
-		return fmt.Errorf("failed to connect to VM: %w", err)
-	}
-	defer func() {
-		if sshClient != nil {
-			sshClient.Close()
-		}
-	}()
-
-	// 3. Setup Reconnect Closure (needed if JIT installation triggers user group changes)
-	reconnectClosure := func() (validation.SSHRunner, error) {
-		log.Println("Reconnecting SSH to apply group changes...")
-		sshClient.Close()
-		client, err := connectToVM(targetIP, targetUser, keyBytes)
-		if err != nil {
-			return nil, err
-		}
-		sshClient = client
-		return validation.NewRealSSHRunner(sshClient), nil
-	}
-
-	var runner validation.SSHRunner = validation.NewRealSSHRunner(sshClient)
-
-	// 4. Detect target VM OS once at startup
-	osID, err := detectOS(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to detect target OS: %w", err)
-	}
-	log.Printf("Detected target VM operating system: %s", osID)
-
-	var targetEnv validation.TargetEnvironment
-	targetEnv.OSID = osID
-	targetEnv.GKEVersion = gkeVer
-	targetEnv.HasVersion = hasVersion
-
-	if hasVersion {
-		log.Printf("Evaluating check constraints for OS: %s, GKE Version: %s", osID, gkeVer)
-	} else {
-		log.Printf("Evaluating check constraints for OS: %s (no GKE version specified, skipping version gates)", osID)
-	}
-
-	// 5. Retrieve and validate registered checks
+	// Retrieve and validate registered checks
+	registerDynamicChecks()
 	allChecks := validation.RegisteredChecks()
 	if err := validateChecks(allChecks); err != nil {
 		return fmt.Errorf("invalid check registry: %w", err)
@@ -162,27 +128,107 @@ func run() error {
 	tier0Checks := filterChecksByTier(activeChecks, validation.Tier0)
 	tier1Checks := filterChecksByTier(activeChecks, validation.Tier1)
 
-	// 6. Run Tier 0 Gatekeeper checks first (No JIT installations yet!)
+	// Run Tier 0 Gatekeeper checks first (No JIT installations yet!)
 	if len(tier0Checks) > 0 {
-		if err := runTier0(ctx, runner, tier0Checks); err != nil {
+		if err := runTier0(ctx, targetEnv.Runner, tier0Checks); err != nil {
 			return fmt.Errorf("Gatekeeper checks failed: %w", err)
 		}
 	}
 
-	// 7. Resolve and Install Dependencies JIT for Tier 1 checks (passing detected osID!)
-	runner, err = resolveAndInstallDependencies(ctx, runner, tier1Checks, reconnectClosure, osID)
+	// Resolve and Install Dependencies JIT for Tier 1 checks (passing detected osID!)
+	runner, err := resolveAndInstallDependencies(ctx, targetEnv.Runner, tier1Checks, targetEnv.ReconnectClosure, targetEnv.OSID)
 	if err != nil {
 		return fmt.Errorf("failed JIT dependency installation: %w", err)
 	}
 
-	// 8. Run Tier 1 Checks
+	// Run Tier 1 Checks
 	if len(tier1Checks) > 0 {
+		// Use the possibly reconnected runner.
 		if err := runTier1(ctx, runner, tier1Checks); err != nil {
 			return fmt.Errorf("completed with failures: %w", err)
 		}
 	}
 
 	return nil
+}
+
+func setupTarget(ctx context.Context, gkeVer utils.SemVer) (validation.TargetEnvironment, func(), error) {
+	var targetIP string
+	var targetUser string
+	var keyBytes []byte
+	var cleanups []func()
+	var err error
+	var targetEnv validation.TargetEnvironment
+
+	// Make sure we clean up if we fail in the middle of setup
+	defer func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}()
+
+	// 1. Resolve Target Connection Info (either provision a new VM or use existing)
+	if *provisionVM {
+		var cleanup func()
+		targetIP, keyBytes, cleanup, err = provisionAndTunnel(ctx)
+		if err != nil {
+			return validation.TargetEnvironment{}, nil, err
+		}
+		cleanups = append(cleanups, cleanup)
+		targetUser = "certuser"
+	} else {
+		targetIP, targetUser, keyBytes, err = getTargetConnectionInfo()
+		if err != nil {
+			return validation.TargetEnvironment{}, nil, err
+		}
+	}
+
+	// 2. Connect to the Target VM
+	sshClient, err := connectToVM(targetIP, targetUser, keyBytes)
+	if err != nil {
+		return validation.TargetEnvironment{}, nil, fmt.Errorf("failed to connect to VM: %w", err)
+	}
+	cleanups = append(cleanups, func() {
+		if sshClient != nil {
+			sshClient.Close()
+		}
+	})
+
+	// 3. Setup Reconnect Closure (needed if JIT installation triggers user group changes)
+	targetEnv.ReconnectClosure = func() (validation.SSHRunner, error) {
+		log.Println("Reconnecting SSH to apply group changes...")
+		sshClient.Close()
+		client, err := connectToVM(targetIP, targetUser, keyBytes)
+		if err != nil {
+			return nil, err
+		}
+		sshClient = client
+		return validation.NewRealSSHRunner(sshClient), nil
+	}
+
+	targetEnv.Runner = validation.NewRealSSHRunner(sshClient)
+
+	// 4. Detect target VM OS once at startup
+	osID, err := detectOS(ctx, targetEnv.Runner)
+	if err != nil {
+		return validation.TargetEnvironment{}, nil, fmt.Errorf("failed to detect target OS: %w", err)
+	}
+	log.Printf("Detected target VM operating system: %s", osID)
+
+	targetEnv.OSID = osID
+	targetEnv.GKEVersion = gkeVer
+	targetEnv.HasVersion = true
+
+	log.Printf("Evaluating check constraints for OS: %s, GKE Version: %s", osID, gkeVer)
+
+	returnedCleanups := cleanups
+	cleanups = nil // Disable the defer in this function.
+	returnCleanup := func() {
+		for i := len(returnedCleanups) - 1; i >= 0; i-- {
+			returnedCleanups[i]()
+		}
+	}
+	return targetEnv, returnCleanup, nil
 }
 
 // provisionAndTunnel provisions a new GCE VM and establishes an IAP tunnel to it.
@@ -202,7 +248,7 @@ func provisionAndTunnel(ctx context.Context) (string, []byte, func(), error) {
 	// 2. Provision VM
 	instanceName := fmt.Sprintf("gke-os-cert-suite-%d-%s", time.Now().Unix(), randomString(6))
 	log.Printf("Provisioning GCE VM %s in project %s, zone %s...", instanceName, *gcpProject, *gcpZone)
-	internalIP, err := provision.CreateInstance(ctx, *gcpProject, *gcpZone, instanceName, *machineType, *sourceImage, "certuser", keyPair.PublicKeySSH)
+	internalIP, err := provision.CreateInstance(ctx, *gcpProject, *gcpZone, instanceName, *machineType, *sourceImage, "certuser", keyPair.PublicKeySSH, *subnetwork)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("failed to provision VM: %w", err)
 	}
@@ -218,11 +264,13 @@ func provisionAndTunnel(ctx context.Context) (string, []byte, func(), error) {
 			}
 			_ = tunnelCmd.Wait()
 		}
-		log.Printf("Tearing down GCE VM %s...", instanceName)
-		if err := provision.DeleteInstance(ctx, *gcpProject, *gcpZone, instanceName); err != nil {
-			log.Printf("Warning: failed to delete instance %s: %v", instanceName, err)
-		} else {
-			log.Println("VM torn down successfully.")
+		if !*skipTeardown {
+			log.Printf("Tearing down GCE VM %s...", instanceName)
+			if err := provision.DeleteInstance(ctx, *gcpProject, *gcpZone, instanceName); err != nil {
+				log.Printf("Warning: failed to delete instance %s: %v", instanceName, err)
+			} else {
+				log.Println("VM torn down successfully.")
+			}
 		}
 	}
 
