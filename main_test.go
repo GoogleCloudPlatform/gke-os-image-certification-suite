@@ -17,7 +17,10 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/tools"
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation"
@@ -61,21 +64,24 @@ func (m *mockCleanableCheck) Cleanup(ctx context.Context, runner validation.SSHR
 }
 
 func TestRunTier0_FailureHalts(t *testing.T) {
-	t0Fail := &mockCheck{name: "t0-fail", tier: validation.Tier0, runErr: errors.New("t0 failed")}
-	t0Next := &mockCheck{name: "t0-next-should-not-run", tier: validation.Tier0}
+	err1 := errors.New("t0 fail 1")
+	err2 := errors.New("t0 fail 2")
+	t0Fail1 := &mockCheck{name: "t0-fail-1", tier: validation.Tier0, runErr: err1}
+	t0Pass := &mockCheck{name: "t0-pass", tier: validation.Tier0}
+	t0Fail2 := &mockCheck{name: "t0-fail-2", tier: validation.Tier0, runErr: err2}
 
-	checks := []validation.Check{t0Fail, t0Next}
+	checks := []validation.Check{t0Fail1, t0Pass, t0Fail2}
 
 	err := runTier0(context.Background(), nil, checks)
 	if err == nil {
-		t.Errorf("Expected error from runTier0 due to check failure, got nil")
+		t.Fatalf("Expected error from runTier0 due to check failures, got nil")
 	}
 
-	if !t0Fail.runCalled {
-		t.Errorf("Expected first Tier 0 check to be run")
+	if !t0Fail1.runCalled || !t0Pass.runCalled || !t0Fail2.runCalled {
+		t.Errorf("Expected all Tier 0 checks to run and accumulate failures before halting")
 	}
-	if t0Next.runCalled {
-		t.Errorf("Expected subsequent Tier 0 checks NOT to run after a failure")
+	if !errors.Is(err, err1) || !errors.Is(err, err2) {
+		t.Errorf("Expected aggregated error to wrap both err1 and err2, got: %v", err)
 	}
 }
 
@@ -261,3 +267,55 @@ func TestAllRegisteredChecksConform(t *testing.T) {
 		t.Fatalf("Registered check suite failed architectural validation: %v", err)
 	}
 }
+
+type mockTier0Check struct {
+	name  string
+	runFn func(ctx context.Context, runner validation.SSHRunner) error
+}
+
+func (m *mockTier0Check) Name() string          { return m.name }
+func (m *mockTier0Check) Description() string   { return "mock tier 0 gatekeeper check" }
+func (m *mockTier0Check) Tier() validation.Tier { return validation.Tier0 }
+func (m *mockTier0Check) Destructive() bool     { return false }
+func (m *mockTier0Check) Run(ctx context.Context, runner validation.SSHRunner) error {
+	if m.runFn != nil {
+		return m.runFn(ctx, runner)
+	}
+	return nil
+}
+
+func TestRunTier0_BoundedConcurrency(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxObserved atomic.Int32
+
+	var checks []validation.Check
+	for i := 0; i < 15; i++ {
+		checks = append(checks, &mockTier0Check{
+			name: fmt.Sprintf("gatekeeper-%d", i),
+			runFn: func(ctx context.Context, runner validation.SSHRunner) error {
+				cur := inFlight.Add(1)
+				for {
+					prev := maxObserved.Load()
+					if cur <= prev || maxObserved.CompareAndSwap(prev, cur) {
+						break
+					}
+				}
+				time.Sleep(30 * time.Millisecond)
+				inFlight.Add(-1)
+				return nil
+			},
+		})
+	}
+
+	if err := runTier0(context.Background(), nil, checks); err != nil {
+		t.Fatalf("expected runTier0 to succeed, got: %v", err)
+	}
+
+	if maxObserved.Load() <= 1 {
+		t.Errorf("expected Tier 0 checks to run concurrently (maxObserved > 1), got %d", maxObserved.Load())
+	}
+	if maxObserved.Load() > maxTier0Concurrency {
+		t.Errorf("expected concurrency <= %d, got %d", maxTier0Concurrency, maxObserved.Load())
+	}
+}
+

@@ -41,7 +41,7 @@ In this mode, the runner automatically handles the entire machine lifecycle:
 1. Generates an ephemeral SSH key pair in memory.
 2. Provisions a GCE VM (with an ephemeral public IP for outbound internet access during bootstrapping).
 3. Establishes a secure IAP (Identity-Aware Proxy) tunnel.
-4. Runs Tier 0 Gatekeeper checks on the clean, unmodified operating system.
+4. Runs Tier 0 Gatekeeper checks concurrently (up to 5 parallel SSH sessions to respect `sshd` `MaxSessions` limits) on the clean, unmodified operating system.
 5. Runs non-destructive Tier 1 validation checks.
 6. Resolves required test tools (**Docker**, **Kind**, **Kubectl**) and bootstraps them JIT only when dependent/destructive checks require them.
    * *COS & Directory Permissions:* For Container-Optimized OS (COS) which has a read-only root directory, binary-only tools (Kind, Kubectl) are installed in `$HOME/.local/bin`. The pre-installed Docker daemon is reused.
@@ -216,8 +216,8 @@ import (
 
 Regardless of the tier, all checks must be executable independently under the assumption of a clean-state environment. Within a specific tier, there is no designated execution order; instead, ordering is implicitly handled by the tiered check system itself. The specific details for each tier are outlined below:
 
-* **Tier 0 (Gatekeepers):** Run first, sequentially.
-  * If any Tier 0 check fails, the test suite halts immediately. Use this for critical dependencies (e.g., checking if `containerd` exists).
+* **Tier 0 (Gatekeepers):** Run first, concurrently (up to 5 parallel SSH sessions).
+  * Evaluates all Tier 0 Gatekeepers and aggregates all failures before halting without running Tier 1. This ensures all baseline OS compatibility issues are discovered in a single run. Use this for critical dependencies (e.g., checking if `containerd` exists).
   * Tier 0 checks are baseline compatibility tests, or "Gatekeepers," that verify the target operating system meets the absolute minimum architectural requirements to run GKE.
   * They are simple, non-destructive checks that validate critical host prerequisites like unified cgroup v2 hierarchy support and the existence of the containerd runtime.
   * Because they must run on a clean, unmodified system, they are defined by a strict architectural constraint that forbids them from declaring or installing any external software dependencies.
