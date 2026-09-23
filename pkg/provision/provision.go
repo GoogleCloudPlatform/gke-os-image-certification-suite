@@ -60,7 +60,7 @@ func GenerateSSHKeyPair() (*SSHKeyPair, error) {
 }
 
 // CreateInstance creates a GCE VM with a public IP and registers the ephemeral SSH key.
-func CreateInstance(ctx context.Context, projectID, zone, instanceName, machineType, sourceImage, sshUser, publicKey string) (string, error) {
+func CreateInstance(ctx context.Context, projectID, zone, instanceName, machineType, sourceImage, sshUser, publicKey, subnet string) (string, error) {
 	instancesClient, err := compute.NewInstancesRESTClient(ctx)
 	if err != nil {
 		return "", fmt.Errorf("NewInstancesRESTClient: %w", err)
@@ -111,6 +111,17 @@ func CreateInstance(ctx context.Context, projectID, zone, instanceName, machineT
 				},
 			},
 		},
+	}
+	if subnet != "" {
+		idx := strings.LastIndex(zone, "-")
+		// If '-' is not found (idx == -1),
+		// or it's at the very beginning (idx == 0 -> empty prefix),
+		// or it's at the very end (idx == len-1 -> empty suffix)
+		if idx <= 0 || idx == len(zone)-1 {
+			return "", fmt.Errorf("Cannot extract region from zone %s", zone)
+		}
+		region := zone[:idx]
+		req.InstanceResource.NetworkInterfaces[0].Subnetwork = proto.String(fmt.Sprintf("https://www.googleapis.com/compute/v1/projects/%s/regions/%s/subnetworks/%s", projectID, region, subnet))
 	}
 
 	op, err := instancesClient.Insert(ctx, req)

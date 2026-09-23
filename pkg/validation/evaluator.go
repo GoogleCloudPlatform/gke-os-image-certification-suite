@@ -25,13 +25,21 @@ import (
 func IsApplicable(c Check, env TargetEnvironment) (bool, string) {
 	constrained, ok := c.(ConstrainedCheck)
 	if !ok {
+		if !ok && env.Runner == nil {
+			return false, "Unconstrained checks need a target VM to run"
+		}
 		return true, "" // Unconstrained checks run everywhere
 	}
 
 	rule := constrained.Constraints()
 	targetOS := strings.ToLower(strings.TrimSpace(env.OSID))
 
-	// 1. Evaluate OnlyOS
+	// If there is no target VM, run only checks that don't need it.
+	if env.Runner == nil && !rule.NoTargetVMNecessary {
+		return false, "needs target VM but none has been created"
+	}
+
+	// Evaluate OnlyOS
 	if len(rule.OnlyOS) > 0 {
 		matched := false
 		for _, os := range rule.OnlyOS {
@@ -45,14 +53,14 @@ func IsApplicable(c Check, env TargetEnvironment) (bool, string) {
 		}
 	}
 
-	// 2. Evaluate SkipOS
+	// Evaluate SkipOS
 	for _, os := range rule.SkipOS {
 		if strings.EqualFold(os, targetOS) {
 			return false, fmt.Sprintf("OS %q matches SkipOS rule", targetOS)
 		}
 	}
 
-	// 3. Evaluate Top-Level GKE Version Range (if version is supplied)
+	// Evaluate Top-Level GKE Version Range (if version is supplied)
 	if env.HasVersion {
 		if rule.MinGKEVersion != "" {
 			min, err := utils.ParseSemVer(rule.MinGKEVersion)
@@ -68,7 +76,7 @@ func IsApplicable(c Check, env TargetEnvironment) (bool, string) {
 		}
 	}
 
-	// 4. Evaluate Matrix Rules (OS-specific version constraints)
+	// Evaluate Matrix Rules (OS-specific version constraints)
 	for _, mr := range rule.MatrixRules {
 		if strings.EqualFold(mr.OSID, targetOS) {
 			inRange := true

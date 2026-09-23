@@ -20,9 +20,11 @@ import (
 
 // TargetEnvironment holds the runtime properties of the target VM and GKE release under test.
 type TargetEnvironment struct {
-	OSID       string       // e.g., "cos", "ubuntu", "nixos", "rhel"
-	GKEVersion utils.SemVer // Parsed SemVer representation
-	HasVersion bool         // True if a valid GKE version was provided
+	OSID             string       // e.g., "cos", "ubuntu", "nixos", "rhel"
+	GKEVersion       utils.SemVer // Parsed SemVer representation
+	HasVersion       bool         // True if a valid GKE version was provided
+	Runner           SSHRunner
+	ReconnectClosure func() (SSHRunner, error)
 }
 
 // Constraint defines declarative rules governing when a check should execute.
@@ -38,6 +40,8 @@ type Constraint struct {
 	MaxGKEVersion string
 	// MatrixRules allows composite OS + Version constraints.
 	MatrixRules []MatrixRule
+	// NoTargetVMNecessary means the check does not use the target VM (but can run in environments where there is one).
+	NoTargetVMNecessary bool
 }
 
 // MatrixRule allows conditional version constraints applied only to a specific OS.
