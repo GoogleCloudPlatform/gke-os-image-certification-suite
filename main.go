@@ -149,37 +149,37 @@ func run() error {
 		return fmt.Errorf("invalid check registry: %w", err)
 	}
 
-	var activeChecks []validation.Check
-	for _, c := range allChecks {
-		applicable, reason := validation.IsApplicable(c, targetEnv)
-		if !applicable {
-			log.Printf("Skipping check %s: %s", c.Name(), reason)
-			continue
-		}
-		activeChecks = append(activeChecks, c)
-	}
+	tier0Checks := filterChecksByTier(allChecks, validation.Tier0)
+	tier1Checks := filterChecksByTier(allChecks, validation.Tier1)
 
-	tier0Checks := filterChecksByTier(activeChecks, validation.Tier0)
-	tier1Checks := filterChecksByTier(activeChecks, validation.Tier1)
+	var stats suiteStats
 
 	// 6. Run Tier 0 Gatekeeper checks first (No JIT installations yet!)
 	if len(tier0Checks) > 0 {
-		if err := runTier0(ctx, runner, tier0Checks); err != nil {
+		if err := runTier0(ctx, runner, targetEnv, tier0Checks, &stats); err != nil {
+			printSummary(stats)
 			return fmt.Errorf("Gatekeeper checks failed: %w", err)
 		}
 	}
 
-	// 7. Resolve and Install Dependencies JIT for Tier 1 checks (passing detected osID!)
-	runner, err = resolveAndInstallDependencies(ctx, runner, tier1Checks, reconnectClosure, osID)
+	// 7. Resolve and Install Dependencies JIT for Tier 1 checks that are applicable
+	var activeTier1 []validation.Check
+	for _, c := range tier1Checks {
+		applicable, _, _ := validation.EvaluateCheck(ctx, c, targetEnv, runner)
+		if applicable {
+			activeTier1 = append(activeTier1, c)
+		}
+	}
+	runner, err = resolveAndInstallDependencies(ctx, runner, activeTier1, reconnectClosure, osID)
 	if err != nil {
 		return fmt.Errorf("failed JIT dependency installation: %w", err)
 	}
 
 	// 8. Run Tier 1 Checks
-	if len(tier1Checks) > 0 {
-		if err := runTier1(ctx, runner, tier1Checks); err != nil {
-			return fmt.Errorf("completed with failures: %w", err)
-		}
+	tier1Err := runTier1(ctx, runner, targetEnv, tier1Checks, &stats)
+	printSummary(stats)
+	if tier1Err != nil {
+		return fmt.Errorf("completed with failures: %w", tier1Err)
 	}
 
 	return nil
@@ -399,12 +399,69 @@ func resolveAndInstallDependencies(ctx context.Context, runner validation.SSHRun
 	return runner, nil
 }
 
+type suiteStats struct {
+	passed  int
+	skipped int
+	failed  int
+}
+
+func printSummary(stats suiteStats) {
+	fmt.Println()
+	fmt.Println("============================================================")
+	fmt.Printf("Test Suite Summary: %d PASSED, %d SKIPPED, %d FAILED\n", stats.passed, stats.skipped, stats.failed)
+	fmt.Println("============================================================")
+}
+
+// executeCheck evaluates constraints, runs the check if applicable, updates stats,
+// and logs status (...PASSED, ...SKIPPED, ...FAILED). Returns (skipped bool, err error).
+func executeCheck(ctx context.Context, runner validation.SSHRunner, env validation.TargetEnvironment, c validation.Check, label string, stats *suiteStats) (bool, error) {
+	prefix := ""
+	if label != "" {
+		prefix = label + " "
+	}
+	applicable, reason, err := validation.EvaluateCheck(ctx, c, env, runner)
+	if err != nil {
+		fmt.Printf("  Running %s%s...FAILED\n", prefix, c.Name())
+		fmt.Printf("  ERROR: evaluating constraints for %s%s failed: %v\n", prefix, c.Name(), err)
+		if stats != nil {
+			stats.failed++
+		}
+		return false, fmt.Errorf("constraint evaluation failed: %w", err)
+	}
+	if !applicable {
+		if reason != "" {
+			fmt.Printf("  Running %s%s...SKIPPED (%s)\n", prefix, c.Name(), reason)
+		} else {
+			fmt.Printf("  Running %s%s...SKIPPED\n", prefix, c.Name())
+		}
+		if stats != nil {
+			stats.skipped++
+		}
+		return true, nil
+	}
+
+	err = c.Run(ctx, runner)
+	if err != nil {
+		fmt.Printf("  Running %s%s...FAILED\n", prefix, c.Name())
+		fmt.Printf("  ERROR: %s%s failed: %v\n", prefix, c.Name(), err)
+		if stats != nil {
+			stats.failed++
+		}
+		return false, err
+	}
+
+	fmt.Printf("  Running %s%s...PASSED\n", prefix, c.Name())
+	if stats != nil {
+		stats.passed++
+	}
+	return false, nil
+}
+
 // runTier0 executes the Tier 0 gatekeeper checks sequentially.
-func runTier0(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
+func runTier0(ctx context.Context, runner validation.SSHRunner, env validation.TargetEnvironment, checks []validation.Check, stats *suiteStats) error {
 	fmt.Printf("Running Tier 0 Gatekeeper checks (%d)...\n", len(checks))
 	for _, c := range checks {
-		fmt.Printf("  Running Gatekeeper %s...\n", c.Name())
-		if err := c.Run(ctx, runner); err != nil {
+		if _, err := executeCheck(ctx, runner, env, c, "Gatekeeper", stats); err != nil {
 			return fmt.Errorf("FATAL: Gatekeeper %s failed: %w. Halting execution", c.Name(), err)
 		}
 	}
@@ -413,7 +470,7 @@ func runTier0(ctx context.Context, runner validation.SSHRunner, checks []validat
 }
 
 // runTier1 executes the Tier 1 checks sequentially, separating destructive and non-destructive.
-func runTier1(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
+func runTier1(ctx context.Context, runner validation.SSHRunner, env validation.TargetEnvironment, checks []validation.Check, stats *suiteStats) error {
 	fmt.Printf("Running Tier 1 checks (%d)...\n", len(checks))
 	var nonDestructive []validation.Check
 	var destructive []validation.Check
@@ -429,9 +486,7 @@ func runTier1(ctx context.Context, runner validation.SSHRunner, checks []validat
 	if len(nonDestructive) > 0 {
 		fmt.Printf("Running non-destructive Tier 1 checks sequentially (%d)...\n", len(nonDestructive))
 		for _, c := range nonDestructive {
-			fmt.Printf("  Running check %s...\n", c.Name())
-			if err := c.Run(ctx, runner); err != nil {
-				fmt.Printf("  ERROR: check %s failed: %v\n", c.Name(), err)
+			if _, err := executeCheck(ctx, runner, env, c, "check", stats); err != nil {
 				hasFailures = true
 			}
 		}
@@ -440,19 +495,20 @@ func runTier1(ctx context.Context, runner validation.SSHRunner, checks []validat
 	if len(destructive) > 0 {
 		fmt.Printf("Running destructive Tier 1 checks sequentially (%d)...\n", len(destructive))
 		for _, c := range destructive {
-			fmt.Printf("  Running destructive check %s...\n", c.Name())
-			if err := c.Run(ctx, runner); err != nil {
-				fmt.Printf("  ERROR: destructive check %s failed: %v\n", c.Name(), err)
+			skipped, err := executeCheck(ctx, runner, env, c, "destructive check", stats)
+			if err != nil {
 				hasFailures = true
 			}
-			if cleanable, ok := c.(validation.CleanableCheck); ok {
-				fmt.Printf("  Cleaning up destructive check %s...\n", c.Name())
-				cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 1*time.Minute)
-				err := cleanable.Cleanup(cleanupCtx, runner)
-				cancel()
-				if err != nil {
-					fmt.Printf("  ERROR: cleanup for check %s failed: %v\n", c.Name(), err)
-					hasFailures = true
+			if !skipped {
+				if cleanable, ok := c.(validation.CleanableCheck); ok {
+					fmt.Printf("  Cleaning up destructive check %s...\n", c.Name())
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 1*time.Minute)
+					err := cleanable.Cleanup(cleanupCtx, runner)
+					cancel()
+					if err != nil {
+						fmt.Printf("  ERROR: cleanup for check %s failed: %v\n", c.Name(), err)
+						hasFailures = true
+					}
 				}
 			}
 		}

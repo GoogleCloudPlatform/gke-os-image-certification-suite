@@ -223,8 +223,44 @@ Regardless of the tier, all checks must be executable independently under the as
   * Because they must run on a clean, unmodified system, they are defined by a strict architectural constraint that forbids them from declaring or installing any external software dependencies.
 * **Tier 1 (Validation Checks):** Run after all Tier 0 checks pass.
   * **All Tier 1 checks (both non-destructive and destructive) currently execute sequentially.** *(Note: Concurrent execution for non-destructive checks with worker-pool limits is in active development).*
-  * **Destructive checks:** Modify some system state and/or have potential for conflicts with other checks. These checks must revert the system logic to its original state prior to completing. *(Note: Formal enforcement via the `CleanableCheck` interface is currently in code review under CL 2187941).*
+  * **Destructive checks:** Modify some system state and/or have potential for conflicts with other checks. These checks must revert the system logic to its original state prior to completing via the `CleanableCheck` interface.
   * Unlike Tier 0 checks, Tier 1 checks are permitted to declare external tool dependencies (like Docker, Kind, or Kubectl) which the runner will automatically install JIT before executing the check.
+
+### 6. Check Execution Status & Summary Output
+
+During execution, each check displays its status upon completion:
+* `...PASSED`: The check executed and passed successfully.
+* `...SKIPPED (<reason>)`: The check was skipped (either via declarative constraints or a runtime skip condition).
+* `...FAILED`: The check failed, followed immediately by `ERROR: check <name> failed: <err>`.
+
+Sample execution output:
+```text
+Running non-destructive Tier 1 checks sequentially (45)...
+  Running check containerd-metrics-endpoint-listening...PASSED
+  Running check accelerator/tpu-v7x-vfio-pci-binding...SKIPPED (Google TPU v7x device not detected on node)
+  Running check networking/cilium-ebpf-prerequisites...PASSED
+
+============================================================
+Test Suite Summary: 44 PASSED, 1 SKIPPED, 0 FAILED
+============================================================
+```
+
+### 7. Conditional Checks & Declarative Constraints
+
+Checks can declare constraints governing when they should run by implementing the `validation.ConstrainedCheck` interface and returning a `validation.Constraint`:
+
+```go
+type ConstrainedCheck interface {
+    Check
+    Constraints() Constraint
+}
+```
+
+Constraints support both static filtering and dynamic runtime predicates:
+* **OS Filtering:** `OnlyOS: []string{"cos", "ubuntu"}` or `SkipOS: []string{"nixos"}`.
+* **GKE Version Constraints:** `MinGKEVersion: "1.34.0"`, `MaxGKEVersion: "1.36.99"`, or conditional `MatrixRules`.
+* **Dynamic Hardware/Environment Condition:** `Condition: func(ctx context.Context, runner SSHRunner) (bool, string, error)` checks the live VM (e.g. sysfs, PCI bus, or kernel state). If the condition returns `false`, the check is marked `SKIPPED` with the returned reason.
+
 
 ---
 
