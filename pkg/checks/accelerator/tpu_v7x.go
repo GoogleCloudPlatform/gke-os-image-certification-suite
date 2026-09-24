@@ -351,6 +351,25 @@ func (c *tpuKernelCmdlineCheck) Run(ctx context.Context, runner validation.SSHRu
 	return nil
 }
 
+var tpuV7xConstraint = validation.Constraint{
+	Condition: func(ctx context.Context, runner validation.SSHRunner) (bool, string, error) {
+		hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
+		if err != nil {
+			return false, "", fmt.Errorf("failed to check for Google TPU presence: %w", err)
+		}
+		if !hasTPU {
+			return false, "Google TPU v7x device not detected on node", nil
+		}
+		return true, "", nil
+	},
+}
+
+func (c *tpuVfioPciBindingCheck) Constraints() validation.Constraint        { return tpuV7xConstraint }
+func (c *tpuVfioDeviceSetupCheck) Constraints() validation.Constraint       { return tpuV7xConstraint }
+func (c *tpuDevicePermissionsRuleCheck) Constraints() validation.Constraint { return tpuV7xConstraint }
+func (c *tpuResourceLimitsCheck) Constraints() validation.Constraint        { return tpuV7xConstraint }
+func (c *tpuKernelCmdlineCheck) Constraints() validation.Constraint         { return tpuV7xConstraint }
+
 func init() {
 	validation.Register(&tpuVfioPciBindingCheck{})
 	validation.Register(&tpuVfioDeviceSetupCheck{})
