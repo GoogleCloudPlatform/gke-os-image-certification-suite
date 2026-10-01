@@ -17,6 +17,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -25,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/provision"
@@ -42,17 +44,28 @@ import (
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/security"
 )
 
+// OpenSSH's default MaxSessions per single TCP connection in sshd_config is 10:
+// https://man.openbsd.org/sshd_config#MaxSessions
+// We default concurrent check execution to 5 (50% of MaxSessions) and enforce
+// concurrency < 10 so that even if sessions are closing asynchronously over the
+// IAP tunnel while new sessions are opening, we never exceed sshd's MaxSessions limit.
+const (
+	defaultConcurrency = 5
+	maxSSHMaxSessions  = 10
+)
+
 var (
 	vmIP       = flag.String("vm-ip", "", "IP address of the target GCE VM (ignored if -provision-vm is true)")
 	sshKeyPath = flag.String("ssh-key", "", "Path to the private SSH key file (ignored if -provision-vm is true)")
 	sshUser    = flag.String("ssh-user", "certuser", "SSH username for the VM (ignored if -provision-vm is true)")
 
-	provisionVM    = flag.Bool("provision-vm", false, "Auto-provision a GCE VM for the test run")
-	gcpProject     = flag.String("gcp-project", "", "GCP Project ID (required if -provision-vm is true)")
-	gcpZone        = flag.String("gcp-zone", "", "GCP Zone (required if -provision-vm is true)")
-	machineType    = flag.String("machine-type", "e2-medium", "GCE Machine Type")
-	sourceImage    = flag.String("source-image", "", "Source image path or family (required if -provision-vm is true)")
-	gkeVersionFlag = flag.String("gke-version", "1.35.0", "Target GKE Kubernetes version (e.g. 1.35.0 or 1.36.0)")
+	provisionVM     = flag.Bool("provision-vm", false, "Auto-provision a GCE VM for the test run")
+	gcpProject      = flag.String("gcp-project", "", "GCP Project ID (required if -provision-vm is true)")
+	gcpZone         = flag.String("gcp-zone", "", "GCP Zone (required if -provision-vm is true)")
+	machineType     = flag.String("machine-type", "e2-medium", "GCE Machine Type")
+	sourceImage     = flag.String("source-image", "", "Source image path or family (required if -provision-vm is true)")
+	gkeVersionFlag  = flag.String("gke-version", "1.35.0", "Target GKE Kubernetes version (e.g. 1.35.0 or 1.36.0)")
+	concurrencyFlag = flag.Int("concurrency", defaultConcurrency, "Maximum number of non-destructive checks to run concurrently (must be between 1 and 9)")
 )
 
 func main() {
@@ -63,7 +76,18 @@ func main() {
 	fmt.Println("Testsuite completed successfully.")
 }
 
+func validateConcurrency(c int) error {
+	if c < 1 || c >= maxSSHMaxSessions {
+		return fmt.Errorf("invalid -concurrency value %d: must be between 1 and %d (less than sshd default MaxSessions of %d)", c, maxSSHMaxSessions-1, maxSSHMaxSessions)
+	}
+	return nil
+}
+
 func run() error {
+	if err := validateConcurrency(*concurrencyFlag); err != nil {
+		return err
+	}
+
 	var gkeVer utils.SemVer
 	var hasVersion bool
 	var err error
@@ -399,20 +423,67 @@ func resolveAndInstallDependencies(ctx context.Context, runner validation.SSHRun
 	return runner, nil
 }
 
-// runTier0 executes the Tier 0 gatekeeper checks sequentially.
-func runTier0(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
-	fmt.Printf("Running Tier 0 Gatekeeper checks (%d)...\n", len(checks))
+// runChecksConcurrently executes the given non-destructive checks concurrently up to *concurrencyFlag at a time,
+// short-circuiting gracefully if ctx is done and returning all accumulated check errors.
+func runChecksConcurrently(ctx context.Context, runner validation.SSHRunner, checks []validation.Check, label string) []error {
+	sem := make(chan struct{}, *concurrencyFlag)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var errs []error
+
+checkLoop:
 	for _, c := range checks {
-		fmt.Printf("  Running Gatekeeper %s...\n", c.Name())
-		if err := c.Run(ctx, runner); err != nil {
-			return fmt.Errorf("FATAL: Gatekeeper %s failed: %w. Halting execution", c.Name(), err)
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			errs = append(errs, ctx.Err())
+			mu.Unlock()
+			break checkLoop
+		case sem <- struct{}{}:
+			if ctx.Err() != nil {
+				<-sem
+				mu.Lock()
+				errs = append(errs, ctx.Err())
+				mu.Unlock()
+				break checkLoop
+			}
 		}
+
+		wg.Add(1)
+		go func(check validation.Check) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			mu.Lock()
+			fmt.Printf("  Running %s %s...\n", label, check.Name())
+			mu.Unlock()
+
+			if err := check.Run(ctx, runner); err != nil {
+				mu.Lock()
+				fmt.Printf("  ERROR: %s %s failed: %v\n", label, check.Name(), err)
+				errs = append(errs, fmt.Errorf("%s %s failed: %w", label, check.Name(), err))
+				mu.Unlock()
+			}
+		}(c)
+	}
+
+	wg.Wait()
+	return errs
+}
+
+// runTier0 executes the Tier 0 gatekeeper checks concurrently up to *concurrencyFlag at a time,
+// accumulating all failures across the tier and halting before Tier 1 if any check fails.
+func runTier0(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
+	fmt.Printf("Running Tier 0 Gatekeeper checks (%d) with concurrency %d...\n", len(checks), *concurrencyFlag)
+	if errs := runChecksConcurrently(ctx, runner, checks, "Gatekeeper"); len(errs) > 0 {
+		return fmt.Errorf("FATAL: %d Gatekeeper check(s) failed: %w. Halting execution", len(errs), errors.Join(errs...))
 	}
 	fmt.Println("All Tier 0 Gatekeeper checks passed.")
 	return nil
 }
 
-// runTier1 executes the Tier 1 checks sequentially, separating destructive and non-destructive.
+// runTier1 executes the Tier 1 checks, running non-destructive checks concurrently
+// and destructive checks sequentially.
 func runTier1(ctx context.Context, runner validation.SSHRunner, checks []validation.Check) error {
 	fmt.Printf("Running Tier 1 checks (%d)...\n", len(checks))
 	var nonDestructive []validation.Check
@@ -427,13 +498,9 @@ func runTier1(ctx context.Context, runner validation.SSHRunner, checks []validat
 
 	hasFailures := false
 	if len(nonDestructive) > 0 {
-		fmt.Printf("Running non-destructive Tier 1 checks sequentially (%d)...\n", len(nonDestructive))
-		for _, c := range nonDestructive {
-			fmt.Printf("  Running check %s...\n", c.Name())
-			if err := c.Run(ctx, runner); err != nil {
-				fmt.Printf("  ERROR: check %s failed: %v\n", c.Name(), err)
-				hasFailures = true
-			}
+		fmt.Printf("Running non-destructive Tier 1 checks (%d) with concurrency %d...\n", len(nonDestructive), *concurrencyFlag)
+		if errs := runChecksConcurrently(ctx, runner, nonDestructive, "check"); len(errs) > 0 {
+			hasFailures = true
 		}
 	}
 
