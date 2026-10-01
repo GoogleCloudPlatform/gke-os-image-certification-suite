@@ -15,6 +15,8 @@
 package validation
 
 import (
+	"context"
+
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/utils"
 )
 
@@ -38,6 +40,8 @@ type Constraint struct {
 	MaxGKEVersion string
 	// MatrixRules allows composite OS + Version constraints.
 	MatrixRules []MatrixRule
+	// Condition is an optional dynamic predicate evaluated on the live VM (e.g. checking for accelerator presence via sysfs).
+	Condition func(ctx context.Context, runner SSHRunner) (bool, string, error)
 }
 
 // MatrixRule allows conditional version constraints applied only to a specific OS.

@@ -15,6 +15,7 @@
 package validation
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -93,4 +94,23 @@ func IsApplicable(c Check, env TargetEnvironment) (bool, string) {
 	}
 
 	return true, ""
+}
+
+// EvaluateCheck evaluates both static constraints and any dynamic Condition predicate for a check.
+func EvaluateCheck(ctx context.Context, c Check, env TargetEnvironment, runner SSHRunner) (bool, string, error) {
+	if applicable, reason := IsApplicable(c, env); !applicable {
+		return false, reason, nil
+	}
+
+	constrained, ok := c.(ConstrainedCheck)
+	if !ok {
+		return true, "", nil
+	}
+
+	rule := constrained.Constraints()
+	if rule.Condition != nil && runner != nil {
+		return rule.Condition(ctx, runner)
+	}
+
+	return true, "", nil
 }
