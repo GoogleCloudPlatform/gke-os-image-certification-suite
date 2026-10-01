@@ -20,7 +20,6 @@ package accelerator
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 
@@ -54,14 +53,6 @@ func (c *tpuVfioPciBindingCheck) Destructive() bool {
 }
 
 func (c *tpuVfioPciBindingCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to check for Google TPU presence: %w", err)
-	}
-	if !hasTPU {
-		log.Printf("INFO: %s: Google TPU device not detected; skipping check", c.Name())
-		return nil
-	}
 
 	cmd := fmt.Sprintf(`for vendor_file in /sys/bus/pci/devices/*/vendor; do
   if [ -f "$vendor_file" ] && \
@@ -108,14 +99,6 @@ func (c *tpuVfioDeviceSetupCheck) Destructive() bool {
 }
 
 func (c *tpuVfioDeviceSetupCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to check for Google TPU presence: %w", err)
-	}
-	if !hasTPU {
-		log.Printf("INFO: %s: Google TPU device not detected; skipping check", c.Name())
-		return nil
-	}
 
 	cmd := fmt.Sprintf(`for vendor_file in /sys/bus/pci/devices/*/vendor; do
   if [ -f "$vendor_file" ] && \
@@ -180,15 +163,6 @@ func (c *tpuDevicePermissionsRuleCheck) Destructive() bool {
 
 // NixOS: the path for installation might be different like /run/current-system/sw/lib/udev/rules.d
 func (c *tpuDevicePermissionsRuleCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to check for Google TPU presence: %w", err)
-	}
-	if !hasTPU {
-		log.Printf("INFO: %s: Google TPU device not detected; skipping check", c.Name())
-		return nil
-	}
-
 	cmd := `bash -c 'shopt -s nullglob; grep -E "KERNEL==\"accel\*\"[[:space:]]*,?[[:space:]]*MODE=\"0666\"|MODE=\"0666\"[[:space:]]*,?[[:space:]]*KERNEL==\"accel\*\"" /etc/udev/rules.d/* /lib/udev/rules.d/* /usr/lib/udev/rules.d/* /run/current-system/sw/lib/udev/rules.d/*'`
 	if err := runner.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("required udev rule granting 0666 permissions to accel* devices not found: %w", err)
@@ -221,14 +195,6 @@ func (c *tpuResourceLimitsCheck) Destructive() bool {
 }
 
 func (c *tpuResourceLimitsCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to check for Google TPU presence: %w", err)
-	}
-	if !hasTPU {
-		log.Printf("INFO: %s: Google TPU device not detected; skipping check", c.Name())
-		return nil
-	}
 
 	// 1. Check if PAM limits are configured in /etc/security/limits.conf or limits.d/ (Ubuntu, Debian, NixOS)
 	memlockPamCmd := `bash -c 'shopt -s nullglob; grep -E "^\s*(\*|root)\s+(hard|soft|-)\s+memlock\s+unlimited" /etc/security/limits.conf /etc/security/limits.d/* 2>/dev/null'`
@@ -309,14 +275,6 @@ func (c *tpuKernelCmdlineCheck) Destructive() bool {
 }
 
 func (c *tpuKernelCmdlineCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	hasTPU, err := acceleratorutil.HasGoogleTPUV7x(ctx, runner)
-	if err != nil {
-		return fmt.Errorf("failed to check for Google TPU presence: %w", err)
-	}
-	if !hasTPU {
-		log.Printf("INFO: %s: Google TPU device not detected; skipping check", c.Name())
-		return nil
-	}
 
 	out, err := runner.CombinedOutput(ctx, "cat /proc/cmdline")
 	if err != nil {

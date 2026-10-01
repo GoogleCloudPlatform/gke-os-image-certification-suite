@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/acceleratorutil"
+	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation"
 )
 
 // mockTPUPCIDeviceOutput returns simulated sysfs output indicating a TPU v7x is present.
@@ -69,8 +70,15 @@ func TestTpuVfioPciBindingCheck_SkipWhenNoTPU(t *testing.T) {
 		},
 	}
 	check := &tpuVfioPciBindingCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, reason, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when no TPU is present, got applicable=true")
+	}
+	if reason == "" {
+		t.Error("expected non-empty skip reason")
 	}
 }
 
@@ -84,8 +92,15 @@ func TestTpuVfioPciBindingCheck_SkipWhenNonV7xTPU(t *testing.T) {
 		},
 	}
 	check := &tpuVfioPciBindingCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, reason, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when non-v7x TPU is present, got applicable=true")
+	}
+	if reason == "" {
+		t.Error("expected non-empty skip reason")
 	}
 }
 
@@ -163,8 +178,12 @@ func TestTpuVfioDeviceSetupCheck_SkipWhenNoTPU(t *testing.T) {
 		},
 	}
 	check := &tpuVfioDeviceSetupCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, _, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when no TPU is present, got applicable=true")
 	}
 }
 
@@ -209,8 +228,12 @@ func TestTpuDevicePermissionsRuleCheck_SkipWhenNoTPU(t *testing.T) {
 		},
 	}
 	check := &tpuDevicePermissionsRuleCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, _, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when no TPU is present, got applicable=true")
 	}
 }
 
@@ -317,8 +340,12 @@ func TestTpuResourceLimitsCheck_SkipWhenNoTPU(t *testing.T) {
 		},
 	}
 	check := &tpuResourceLimitsCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, _, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when no TPU is present, got applicable=true")
 	}
 }
 
@@ -416,8 +443,12 @@ func TestTpuKernelCmdlineCheck_SkipWhenNoTPU(t *testing.T) {
 		},
 	}
 	check := &tpuKernelCmdlineCheck{}
-	if err := check.Run(context.Background(), runner); err != nil {
-		t.Fatalf("expected skip (nil), got %v", err)
+	applicable, _, err := validation.EvaluateCheck(context.Background(), check, validation.TargetEnvironment{}, runner)
+	if err != nil {
+		t.Fatalf("unexpected error evaluating constraints: %v", err)
+	}
+	if applicable {
+		t.Fatal("expected check to be skipped when no TPU is present, got applicable=true")
 	}
 }
 
