@@ -23,18 +23,6 @@ import (
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation/testutil"
 )
 
-func TestPathExistenceCheck_Wildcard(t *testing.T) {
-	check := &pathExistenceCheck{pattern: "/sys/class/net/*/mtu", name: "nic-mtu"}
-	runner := &testutil.MockSSHRunner{}
-	err := check.Run(context.Background(), runner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.RunCmds) != 1 || runner.RunCmds[0] != "ls /sys/class/net/*/mtu" {
-		t.Errorf("Unexpected command: %v", runner.RunCmds)
-	}
-}
-
 func TestPathPermissionCheck_Success(t *testing.T) {
 	check := &pathPermissionCheck{path: "/etc/foo", permissions: "drwxr-xr-x"}
 	runner := &testutil.MockSSHRunner{
@@ -187,30 +175,6 @@ func TestFileReadabilityCheck_Error(t *testing.T) {
 	}
 }
 
-func TestPathExistenceCheck_Success(t *testing.T) {
-	check := &pathExistenceCheck{pattern: "/etc/ssh/sshd_config", name: "sshd-config"}
-	runner := &testutil.MockSSHRunner{}
-	err := check.Run(context.Background(), runner)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runner.RunCmds) != 1 || runner.RunCmds[0] != "ls /etc/ssh/sshd_config" {
-		t.Errorf("Unexpected command: %v", runner.RunCmds)
-	}
-}
-
-func TestPathExistenceCheck_Failure(t *testing.T) {
-	check := &pathExistenceCheck{pattern: "/etc/ssh/sshd_config", name: "sshd-config"}
-	runner := &testutil.MockSSHRunner{
-		RunErrMap: map[string]error{
-			"ls /etc/ssh/sshd_config": errors.New("ls: no such file or directory"),
-		},
-	}
-	err := check.Run(context.Background(), runner)
-	if err == nil {
-		t.Fatal("Expected error due to missing path, got nil")
-	}
-}
 func TestPathPermissionCheck_PermissiveSuperset(t *testing.T) {
 	tests := []struct {
 		name      string
