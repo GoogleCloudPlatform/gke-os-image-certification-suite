@@ -42,6 +42,7 @@ import (
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/node"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/observability"
 	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/security"
+	_ "github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checks/storage"
 )
 
 // OpenSSH's default MaxSessions per single TCP connection in sshd_config is 10:

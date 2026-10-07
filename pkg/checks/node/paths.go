@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/checklib"
 	"github.com/GoogleCloudPlatform/gke-os-image-certification-suite/pkg/validation"
 )
 
@@ -41,28 +42,6 @@ func (c *socketExistsCheck) Destructive() bool     { return false }
 func (c *socketExistsCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
 	if err := runner.Run(ctx, "test -S "+c.path); err != nil {
 		return fmt.Errorf("socket %s does not exist: %w", c.path, err)
-	}
-	return nil
-}
-
-// pathExistenceCheck validates the existence of paths (supporting both static paths and wildcards).
-type pathExistenceCheck struct {
-	pattern string
-	name    string
-}
-
-func (c *pathExistenceCheck) Name() string { return "node/exists-" + c.name }
-
-func (c *pathExistenceCheck) Description() string {
-	return "Verifies that path(s) matching " + c.pattern + " exist"
-}
-
-func (c *pathExistenceCheck) Tier() validation.Tier { return validation.Tier1 }
-func (c *pathExistenceCheck) Destructive() bool     { return false }
-
-func (c *pathExistenceCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	if err := runner.Run(ctx, "ls "+c.pattern); err != nil {
-		return fmt.Errorf("no paths matching pattern %s found: %w", c.pattern, err)
 	}
 	return nil
 }
@@ -154,8 +133,8 @@ func (c *fileReadabilityCheck) Run(ctx context.Context, runner validation.SSHRun
 
 func init() {
 	// 1. Wildcard Paths Existence
-	validation.Register(&pathExistenceCheck{pattern: "/sys/class/net/*/mtu", name: "sys-class-net-nic-mtu"})
-	validation.Register(&pathExistenceCheck{pattern: "/sys/block/*/queue/scheduler", name: "sys-block-disk-queue-scheduler"})
+	validation.Register(&checklib.PathExistenceCheck{Component: "node", Pattern: "/sys/class/net/*/mtu", CheckName: "sys-class-net-nic-mtu"})
+	validation.Register(&checklib.PathExistenceCheck{Component: "node", Pattern: "/sys/block/*/queue/scheduler", CheckName: "sys-block-disk-queue-scheduler"})
 
 	// 2. Path Permissions (non-symlinks)
 	permissions := map[string]string{
@@ -216,13 +195,15 @@ func init() {
 		path: "/etc/os-release",
 		tier: validation.Tier0,
 	})
-	validation.Register(&pathExistenceCheck{
-		pattern: "/etc/ssh/sshd_config",
-		name:    "etc-ssh-sshd_config",
+	validation.Register(&checklib.PathExistenceCheck{
+		Component: "node",
+		Pattern:   "/etc/ssh/sshd_config",
+		CheckName: "etc-ssh-sshd_config",
 	})
-	validation.Register(&pathExistenceCheck{
-		pattern: "/dev/tpm0",
-		name:    "dev-tpm0",
+	validation.Register(&checklib.PathExistenceCheck{
+		Component: "node",
+		Pattern:   "/dev/tpm0",
+		CheckName: "dev-tpm0",
 	})
 
 	// 4. Host Resource Validation Checks (General Node validations)
