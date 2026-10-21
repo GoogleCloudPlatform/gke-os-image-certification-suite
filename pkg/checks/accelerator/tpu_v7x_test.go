@@ -347,7 +347,7 @@ func TestTpuKernelCmdlineCheck_UbuntuSuccess(t *testing.T) {
 	runner := &mockRunner{
 		combinedOutputFunc: func(cmd string) ([]byte, error) {
 			if strings.Contains(cmd, "cat /proc/cmdline") {
-				return []byte("BOOT_IMAGE=/vmlinuz-6.8.0 ro console=ttyS0 idle=poll transparent_hugepage=always intel_iommu=on,sm_on"), nil
+				return []byte("BOOT_IMAGE=/vmlinuz-6.8.0 ro console=ttyS0 idle=poll transparent_hugepage=always intel_iommu=on,sm_on iommu.passthrough=0"), nil
 			}
 			if strings.Contains(cmd, "os-release") {
 				return []byte("NAME=Ubuntu\nID=ubuntu\n"), nil
@@ -358,6 +358,28 @@ func TestTpuKernelCmdlineCheck_UbuntuSuccess(t *testing.T) {
 	check := &tpuKernelCmdlineCheck{}
 	if err := check.Run(context.Background(), runner); err != nil {
 		t.Fatalf("expected success, got %v", err)
+	}
+}
+
+func TestTpuKernelCmdlineCheck_MissingIommuPassthrough(t *testing.T) {
+	runner := &mockRunner{
+		combinedOutputFunc: func(cmd string) ([]byte, error) {
+			if strings.Contains(cmd, "cat /proc/cmdline") {
+				return []byte("BOOT_IMAGE=/vmlinuz-6.8.0 ro console=ttyS0 idle=poll transparent_hugepage=always intel_iommu=on,sm_on"), nil
+			}
+			if strings.Contains(cmd, "os-release") {
+				return []byte("NAME=Ubuntu\nID=ubuntu\n"), nil
+			}
+			return []byte(mockTPUPCIDeviceOutput), nil
+		},
+	}
+	check := &tpuKernelCmdlineCheck{}
+	err := check.Run(context.Background(), runner)
+	if err == nil {
+		t.Fatal("expected failure when iommu.passthrough=0 is missing on Ubuntu, got nil error")
+	}
+	if !strings.Contains(err.Error(), "iommu.passthrough=0") {
+		t.Fatalf("expected error message to mention iommu.passthrough=0, got %v", err)
 	}
 }
 

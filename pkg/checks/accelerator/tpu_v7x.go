@@ -288,7 +288,8 @@ func parseSystemdLimits(out string, isCOS bool) (bool, bool) {
 // in the running kernel command line (/proc/cmdline) or kernel sysfs.
 //
 // Justification:
-// TPU v7x DMA requires IOMMU scalable mode (intel_iommu=on,sm_on), Transparent Hugepages
+// TPU v7x DMA requires IOMMU scalable mode (intel_iommu=on,sm_on), IOMMU translation mode
+// (iommu.passthrough=0 on standard Linux/Ubuntu), Transparent Hugepages
 // (transparent_hugepage=always, or madvise on COS), and low latency polling (idle=poll on Ubuntu).
 type tpuKernelCmdlineCheck struct{}
 
@@ -297,7 +298,7 @@ func (c *tpuKernelCmdlineCheck) Name() string {
 }
 
 func (c *tpuKernelCmdlineCheck) Description() string {
-	return "Verifies that required kernel boot parameters (intel_iommu=on,sm_on, transparent_hugepage=always, idle=poll) are active in /proc/cmdline or sysfs"
+	return "Verifies that required kernel boot parameters (intel_iommu=on,sm_on, iommu.passthrough=0, transparent_hugepage=always, idle=poll) are active in /proc/cmdline or sysfs"
 }
 
 func (c *tpuKernelCmdlineCheck) Tier() validation.Tier {
@@ -332,6 +333,11 @@ func (c *tpuKernelCmdlineCheck) Run(ctx context.Context, runner validation.SSHRu
 	// Check if running on COS
 	osRelease, err := runner.CombinedOutput(ctx, "cat /etc/os-release")
 	isCOS := err == nil && (strings.Contains(strings.ToLower(string(osRelease)), "id=cos") || strings.Contains(strings.ToLower(string(osRelease)), "id_like=cos"))
+
+	// iommu.passthrough=0 is required on standard Linux/Ubuntu distributions (omitted on COS)
+	if !isCOS && !strings.Contains(cmdline, "iommu.passthrough=0") {
+		return fmt.Errorf("required kernel boot parameter \"iommu.passthrough=0\" missing from /proc/cmdline: %s", strings.TrimSpace(cmdline))
+	}
 
 	// transparent_hugepage can be seen via /proc/cmdline (transparent_hugepage=always), active as [always] in sysfs,
 	// or active as [madvise] on COS where libtpu explicitly issues madvise(MADV_HUGEPAGE).
