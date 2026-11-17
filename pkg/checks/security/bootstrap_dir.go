@@ -31,7 +31,7 @@ func (c *bootstrapDirectoryCheck) Tier() validation.Tier { return validation.Tie
 func (c *bootstrapDirectoryCheck) Destructive() bool     { return false }
 
 func (c *bootstrapDirectoryCheck) Run(ctx context.Context, runner validation.SSHRunner) error {
-	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qw "ro"`
+	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qE '(^|,)ro(,|$)'`
 	if err := runner.Run(ctx, cmd); err != nil {
 		return fmt.Errorf("failed to verify that /home/kubernetes/bin or its nearest parent directory is writable on a read-write mount: %w", err)
 	}

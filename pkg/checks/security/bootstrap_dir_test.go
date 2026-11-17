@@ -47,7 +47,7 @@ func TestBootstrapDirectoryCheck_Success(t *testing.T) {
 
 func TestBootstrapDirectoryCheck_Failure(t *testing.T) {
 	check := &bootstrapDirectoryCheck{}
-	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qw "ro"`
+	cmd := `p="/home/kubernetes/bin"; while [ ! -d "$p" ] && [ "$p" != "/" ]; do p=$(dirname "$p"); done; test -d "$p" && (test -w "$p" || sudo test -w "$p") && ! findmnt -no OPTIONS -T "$p" | grep -qE '(^|,)ro(,|$)'`
 	runner := &testutil.MockSSHRunner{
 		RunErrMap: map[string]error{
 			cmd: errors.New("read-only file system"),
